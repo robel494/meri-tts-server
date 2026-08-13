@@ -1,5 +1,6 @@
 from flask import Flask, request, send_file, jsonify
 from gtts import gTTS
+from gtts.lang import tts_langs
 import io
 import os
 import hashlib
@@ -8,16 +9,20 @@ app = Flask(__name__)
 
 SECRET = os.environ.get("APP_SECRET", "meri-tts-2024")
 
-# In-memory cache so same phrase is not regenerated
 audio_cache = {}
 
 @app.route("/ping", methods=["GET"])
 def ping():
-    return jsonify({"status": "ok", "service": "Meri TTS"})
+    supported = list(tts_langs().keys())
+    return jsonify({
+        "status": "ok",
+        "service": "Meri TTS",
+        "amharic_supported": "am" in supported,
+        "supported_langs": supported
+    })
 
 @app.route("/tts", methods=["POST"])
 def synthesize():
-    # Check secret header
     secret = request.headers.get("X-App-Secret", "")
     if secret != SECRET:
         return jsonify({"error": "Unauthorized"}), 401
@@ -27,7 +32,7 @@ def synthesize():
         return jsonify({"error": "Send JSON body"}), 400
 
     text = data.get("text", "").strip()
-    lang = data.get("lang", "am")
+    lang = data.get("lang", "en")
 
     if not text:
         return jsonify({"error": "text is empty"}), 400
@@ -35,18 +40,38 @@ def synthesize():
     if len(text) > 500:
         return jsonify({"error": "text too long"}), 400
 
-    # Create cache key
     cache_key = hashlib.md5(f"{lang}:{text}".encode("utf-8")).hexdigest()
 
     if cache_key not in audio_cache:
-        try:
-            tts = gTTS(text=text, lang=lang, slow=False)
-            buffer = io.BytesIO()
-            tts.write_to_fp(buffer)
-            buffer.seek(0)
-            audio_cache[cache_key] = buffer.getvalue()
-        except Exception as e:
-            return jsonify({"error": str(e)}), 500
+
+        # Try requested language first
+        # If it fails try fallback chain
+        lang_chain = []
+
+        if lang in ("am", "am-ET"):
+            lang_chain = ["am", "en"]
+        else:
+            lang_chain = [lang, "en"]
+
+        audio_bytes = None
+        last_error = None
+
+        for try_lang in lang_chain:
+            try:
+                tts = gTTS(text=text, lang=try_lang, slow=False)
+                buffer = io.BytesIO()
+                tts.write_to_fp(buffer)
+                buffer.seek(0)
+                audio_bytes = buffer.getvalue()
+                break  # success — stop trying
+            except Exception as e:
+                last_error = str(e)
+                continue  # try next language in chain
+
+        if audio_bytes is None:
+            return jsonify({"error": f"All TTS attempts failed: {last_error}"}), 500
+
+        audio_cache[cache_key] = audio_bytes
 
     return send_file(
         io.BytesIO(audio_cache[cache_key]),
