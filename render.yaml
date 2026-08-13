@@ -7,3 +7,5 @@ services:
     envVars:
       - key: APP_SECRET
         value: meri-tts-2024
+      - key: SERVER_URL
+        value: https://meri-tts-server.onrender.com
